@@ -26,48 +26,62 @@ export class TaskRunner {
         task.status = TaskStatus.InProgress;
         task.progress = 'starting job...';
         await this.taskRepository.save(task);
-        const job = getJobForTaskType(task.taskType);
 
         try {
-            console.log(`Starting job ${task.taskType} for task ${task.taskId}...`);
+            // Inside try so an unknown taskType marks the task Failed
+            // rather than stranding it InProgress.
+            const job = getJobForTaskType(task.taskType);
             const resultRepository = this.taskRepository.manager.getRepository(Result);
+
+            console.log(`Starting job ${task.taskType} for task ${task.taskId}...`);
             const taskResult = await job.run(task);
             console.log(`Job ${task.taskType} for task ${task.taskId} completed successfully.`);
+
             const result = new Result();
             result.taskId = task.taskId!;
-            result.data = JSON.stringify(taskResult || {});
+            result.data = JSON.stringify(taskResult ?? {});
             await resultRepository.save(result);
+
             task.resultId = result.resultId!;
             task.status = TaskStatus.Completed;
             task.progress = null;
             await this.taskRepository.save(task);
-
         } catch (error: any) {
             console.error(`Error running job ${task.taskType} for task ${task.taskId}:`, error);
-
             task.status = TaskStatus.Failed;
             task.progress = null;
             await this.taskRepository.save(task);
-
-            throw error;
+            // Intentionally not rethrowing — the finally block must run the
+            // workflow rollup regardless of success or failure.
+        } finally {
+            await this.updateWorkflowStatus(task.workflow.workflowId);
         }
+    }
 
+    private async updateWorkflowStatus(workflowId: string): Promise<void> {
         const workflowRepository = this.taskRepository.manager.getRepository(Workflow);
-        const currentWorkflow = await workflowRepository.findOne({ where: { workflowId: task.workflow.workflowId }, relations: ['tasks'] });
+        const workflow = await workflowRepository.findOne({
+            where: { workflowId },
+            relations: ['tasks'],
+        });
+        if (!workflow) return;
 
-        if (currentWorkflow) {
-            const allCompleted = currentWorkflow.tasks.every(t => t.status === TaskStatus.Completed);
-            const anyFailed = currentWorkflow.tasks.some(t => t.status === TaskStatus.Failed);
+        const tasks = workflow.tasks;
+        const anyFailed = tasks.some(t => t.status === TaskStatus.Failed);
+        const allCompleted = tasks.every(t => t.status === TaskStatus.Completed);
+        const anyPending = tasks.some(
+            t => t.status === TaskStatus.Queued || t.status === TaskStatus.InProgress
+        );
 
-            if (anyFailed) {
-                currentWorkflow.status = WorkflowStatus.Failed;
-            } else if (allCompleted) {
-                currentWorkflow.status = WorkflowStatus.Completed;
-            } else {
-                currentWorkflow.status = WorkflowStatus.InProgress;
-            }
-
-            await workflowRepository.save(currentWorkflow);
+        if (allCompleted) {
+            workflow.status = WorkflowStatus.Completed;
+        } else if (anyFailed && !anyPending) {
+            workflow.status = WorkflowStatus.Failed;
+        } else if (anyPending || anyFailed) {
+            workflow.status = WorkflowStatus.InProgress;
         }
+        // else: all queued, leave at Initial
+
+        await workflowRepository.save(workflow);
     }
 }
