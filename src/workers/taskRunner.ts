@@ -1,4 +1,4 @@
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Task } from '../models/Task';
 import { getJobForTaskType } from '../jobs/JobFactory';
 import {WorkflowStatus} from "../workflows/WorkflowFactory";
@@ -82,6 +82,53 @@ export class TaskRunner {
         }
         // else: all queued, leave at Initial
 
+        const terminal =
+            workflow.status === WorkflowStatus.Completed ||
+            workflow.status === WorkflowStatus.Failed;
+
+        if (terminal) {
+            workflow.finalResult = await this.buildFinalResult(workflow, tasks);
+        }
+
         await workflowRepository.save(workflow);
+    }
+
+    private async buildFinalResult(workflow: Workflow, tasks: Task[]): Promise<string> {
+        const resultRepository = this.taskRepository.manager.getRepository(Result);
+        const resultIds = tasks
+            .map(t => t.resultId)
+            .filter((id): id is string => typeof id === 'string' && id.length > 0);
+
+        const results = resultIds.length > 0
+            ? await resultRepository.findBy({ resultId: In(resultIds) })
+            : [];
+        const resultById = new Map(results.map(r => [r.resultId, r]));
+
+        const orderedTasks = [...tasks].sort((a, b) => a.stepNumber - b.stepNumber);
+
+        const aggregate = {
+            workflowId: workflow.workflowId,
+            summary: {
+                total: tasks.length,
+                completed: tasks.filter(t => t.status === TaskStatus.Completed).length,
+                failed: tasks.filter(t => t.status === TaskStatus.Failed).length,
+            },
+            tasks: orderedTasks.map(t => {
+                const result = t.resultId ? resultById.get(t.resultId) : undefined;
+                let output: unknown = null;
+                if (result && result.data) {
+                    try { output = JSON.parse(result.data); } catch { output = result.data; }
+                }
+                return {
+                    taskId: t.taskId,
+                    stepNumber: t.stepNumber,
+                    type: t.taskType,
+                    status: t.status,
+                    output,
+                };
+            }),
+        };
+
+        return JSON.stringify(aggregate);
     }
 }
