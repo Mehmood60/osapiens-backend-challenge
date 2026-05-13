@@ -1,6 +1,7 @@
 import { Task } from "../models/Task";
 
 export interface DependencyResult {
+    taskId: string;
     stepNumber: number;
     type: string;
     output: unknown;

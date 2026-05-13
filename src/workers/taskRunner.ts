@@ -108,7 +108,7 @@ export class TaskRunner {
             if (r && r.data) {
                 try { output = JSON.parse(r.data); } catch { output = r.data; }
             }
-            return { stepNumber: dep.stepNumber, type: dep.taskType, output };
+            return { taskId: dep.taskId, stepNumber: dep.stepNumber, type: dep.taskType, output };
         });
 
         return { dependencies };

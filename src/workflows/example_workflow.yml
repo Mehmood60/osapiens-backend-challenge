@@ -5,6 +5,9 @@ steps:
   - taskType: "polygonArea"
     stepNumber: 2
     dependsOn: [1]
-  - taskType: "notification"
+  - taskType: "report"
     stepNumber: 3
     dependsOn: [1, 2]
+  - taskType: "notification"
+    stepNumber: 4
+    dependsOn: [3]
