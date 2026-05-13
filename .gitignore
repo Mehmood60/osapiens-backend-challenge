@@ -34,3 +34,6 @@ coverage/
 
 # Personal notes — do not commit
 backend-analysis.md
+
+# Local tooling — not part of the deliverable
+inspect-db.js
