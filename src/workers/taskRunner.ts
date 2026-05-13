@@ -1,6 +1,7 @@
 import { In, Repository } from 'typeorm';
 import { Task } from '../models/Task';
 import { getJobForTaskType } from '../jobs/JobFactory';
+import { DependencyResult, TaskContext } from '../jobs/Job';
 import {WorkflowStatus} from "../workflows/WorkflowFactory";
 import {Workflow} from "../models/Workflow";
 import {Result} from "../models/Result";
@@ -34,7 +35,8 @@ export class TaskRunner {
             const resultRepository = this.taskRepository.manager.getRepository(Result);
 
             console.log(`Starting job ${task.taskType} for task ${task.taskId}...`);
-            const taskResult = await job.run(task);
+            const context = await this.buildContext(task);
+            const taskResult = await job.run(task, context);
             console.log(`Job ${task.taskType} for task ${task.taskId} completed successfully.`);
 
             const result = new Result();
@@ -56,6 +58,60 @@ export class TaskRunner {
         } finally {
             await this.updateWorkflowStatus(task.workflow.workflowId);
         }
+    }
+
+    /**
+     * Marks a task Failed without running its job, because at least one of
+     * its dependencies has Failed. Workflow rollup runs as usual.
+     */
+    async cascadeFail(task: Task): Promise<void> {
+        console.warn(`Cascade-failing task ${task.taskId} (${task.taskType}) — a dependency failed.`);
+        task.status = TaskStatus.Failed;
+        task.progress = null;
+        await this.taskRepository.save(task);
+        await this.updateWorkflowStatus(task.workflow.workflowId);
+    }
+
+    /**
+     * Loads the outputs of this task's `dependsOn` steps, in stepNumber order,
+     * so the Job.run consumer can use them as inputs.
+     */
+    private async buildContext(task: Task): Promise<TaskContext> {
+        if (!task.dependsOn || task.dependsOn.length === 0) {
+            return { dependencies: [] };
+        }
+        const depStepNumbers = task.dependsOn.map(Number).filter(Number.isFinite);
+        if (depStepNumbers.length === 0) return { dependencies: [] };
+
+        const depTasks = await this.taskRepository.find({
+            where: {
+                workflow: { workflowId: task.workflow.workflowId },
+                stepNumber: In(depStepNumbers),
+            },
+        });
+
+        const resultIds = depTasks
+            .map(t => t.resultId)
+            .filter((id): id is string => typeof id === 'string' && id.length > 0);
+
+        const resultRepository = this.taskRepository.manager.getRepository(Result);
+        const results = resultIds.length
+            ? await resultRepository.findBy({ resultId: In(resultIds) })
+            : [];
+        const resultById = new Map(results.map(r => [r.resultId, r]));
+
+        const sorted = [...depTasks].sort((a, b) => a.stepNumber - b.stepNumber);
+
+        const dependencies: DependencyResult[] = sorted.map(dep => {
+            const r = dep.resultId ? resultById.get(dep.resultId) : undefined;
+            let output: unknown = null;
+            if (r && r.data) {
+                try { output = JSON.parse(r.data); } catch { output = r.data; }
+            }
+            return { stepNumber: dep.stepNumber, type: dep.taskType, output };
+        });
+
+        return { dependencies };
     }
 
     private async updateWorkflowStatus(workflowId: string): Promise<void> {

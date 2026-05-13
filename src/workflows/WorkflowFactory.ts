@@ -15,6 +15,7 @@ export enum WorkflowStatus {
 interface WorkflowStep {
     taskType: string;
     stepNumber: number;
+    dependsOn?: number | number[];
 }
 
 interface WorkflowDefinition {
@@ -51,6 +52,7 @@ export class WorkflowFactory {
             task.status = TaskStatus.Queued;
             task.taskType = step.taskType;
             task.stepNumber = step.stepNumber;
+            task.dependsOn = normalizeDependsOn(step.dependsOn);
             task.workflow = savedWorkflow;
             return task;
         });
@@ -59,4 +61,14 @@ export class WorkflowFactory {
 
         return savedWorkflow;
     }
+}
+
+function normalizeDependsOn(raw: number | number[] | undefined): string[] | null {
+    if (raw === undefined || raw === null) return null;
+    const arr = Array.isArray(raw) ? raw : [raw];
+    const cleaned = arr
+        .map(n => Number(n))
+        .filter(n => Number.isFinite(n) && n > 0)
+        .map(String);
+    return cleaned.length ? cleaned : null;
 }
