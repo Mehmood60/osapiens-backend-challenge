@@ -46,6 +46,47 @@ router.get('/:id/status', async (req, res) => {
     }
 });
 
+router.get('/:id/results', async (req, res) => {
+    const { id } = req.params;
+
+    if (!UUID_RE.test(id)) {
+        res.status(400).json({ message: 'Invalid workflow id' });
+        return;
+    }
+
+    try {
+        const workflowRepository = AppDataSource.getRepository(Workflow);
+        const workflow = await workflowRepository.findOne({ where: { workflowId: id } });
+
+        if (!workflow) {
+            res.status(404).json({ message: 'Workflow not found' });
+            return;
+        }
+
+        if (workflow.status !== WorkflowStatus.Completed) {
+            res.status(400).json({
+                message: 'Workflow is not yet completed',
+                status: workflow.status,
+            });
+            return;
+        }
+
+        let finalResult: unknown = null;
+        if (workflow.finalResult) {
+            try { finalResult = JSON.parse(workflow.finalResult); } catch { finalResult = workflow.finalResult; }
+        }
+
+        res.status(200).json({
+            workflowId: workflow.workflowId,
+            status: workflow.status,
+            finalResult,
+        });
+    } catch (error: any) {
+        console.error(`Error fetching workflow ${id} results:`, error);
+        res.status(500).json({ message: 'Failed to fetch workflow results' });
+    }
+});
+
 // Read-only mirror of TaskRunner.updateWorkflowStatus. The persisted
 // workflow.status lags during the first task's run (rollup happens in
 // the runner's finally, after a terminal task transition) — deriving
